@@ -50,9 +50,9 @@ def init_db():
         ''')
         conn.commit()
         conn.close()
-        logger.info("Database initialized successfully")
+        logger.info("✅ Database initialized successfully")
     except Exception as e:
-        logger.error(f"Database initialization error: {e}")
+        logger.error(f"❌ Database initialization error: {e}")
 
 def save_message(user_id: int, chat_id: int, username: str, message_text: str, is_bot: bool):
     try:
@@ -65,7 +65,7 @@ def save_message(user_id: int, chat_id: int, username: str, message_text: str, i
         conn.commit()
         conn.close()
     except Exception as e:
-        logger.error(f"Error saving message: {e}")
+        logger.error(f"❌ Error saving message: {e}")
 
 def get_chat_history(chat_id: int, user_id: int, limit: int = 10):
     try:
@@ -86,7 +86,7 @@ def get_chat_history(chat_id: int, user_id: int, limit: int = 10):
             history.append({"role": role, "content": text})
         return history
     except Exception as e:
-        logger.error(f"Error getting chat history: {e}")
+        logger.error(f"❌ Error getting chat history: {e}")
         return []
 
 async def get_ai_response(messages: list) -> str:
@@ -106,22 +106,62 @@ async def get_ai_response(messages: list) -> str:
         "max_tokens": 1024
     }
     
+    logger.info(f"🔄 Отправляю запрос в Groq API...")
+    logger.info(f"📝 Модель: {MODEL_NAME}")
+    logger.info(f"💬 Сообщений в истории: {len(messages)}")
+    
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(GROQ_API_URL, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=30)) as response:
+            async with session.post(
+                GROQ_API_URL, 
+                json=payload, 
+                headers=headers, 
+                timeout=aiohttp.ClientTimeout(total=60)
+            ) as response:
+                
+                logger.info(f"📡 Получен ответ от Groq: HTTP {response.status}")
+                
                 if response.status == 200:
                     data = await response.json()
-                    return data['choices'][0]['message']['content']
+                    ai_response = data['choices'][0]['message']['content']
+                    logger.info(f"✅ Groq успешно ответил! Длина ответа: {len(ai_response)} символов")
+                    return ai_response
+                    
+                elif response.status == 401:
+                    error_text = await response.text()
+                    logger.error(f"🔑 ОШИБКА АВТОРИЗАЦИИ (401): Неверный API ключ Groq!")
+                    logger.error(f"Ответ: {error_text}")
+                    return "Ошибка: Неверный API ключ Groq. Проверьте ключ на console.groq.com 🔑"
+                    
+                elif response.status == 429:
+                    error_text = await response.text()
+                    logger.error(f"⏰ ПРЕВЫШЕН ЛИМИТ (429): Слишком много запросов!")
+                    logger.error(f"Ответ: {error_text}")
+                    return "Превышен лимит запросов к Groq API. Подождите немного ⏰"
+                    
+                elif response.status == 400:
+                    error_text = await response.text()
+                    logger.error(f"❌ ОШИБКА ЗАПРОСА (400): {error_text}")
+                    return "Ошибка в запросе к AI. Попробуйте переформулировать вопрос 🤔"
+                    
                 else:
                     error_text = await response.text()
-                    logger.error(f"Groq API error: {response.status} - {error_text}")
-                    return "Извините, произошла ошибка при обработке запроса 😔"
+                    logger.error(f"❌ Groq API error {response.status}: {error_text}")
+                    return f"Ошибка Groq API (код {response.status}). Попробуйте позже 😔"
+                    
     except asyncio.TimeoutError:
-        logger.error("Groq API timeout")
+        logger.error("⏰ ТАЙМАУТ: Groq API не ответил за 60 секунд")
         return "Время ожидания истекло. Попробуйте еще раз 🕐"
+        
+    except aiohttp.ClientConnectorError as e:
+        logger.error(f"🌐 ОШИБКА ПОДКЛЮЧЕНИЯ: Не удалось подключиться к Groq API: {e}")
+        return "Не удалось подключиться к AI сервису. Проверьте интернет 🌐"
+        
     except Exception as e:
-        logger.error(f"Error calling Groq API: {e}")
-        return "Произошла ошибка при подключении к AI 😔"
+        logger.error(f"❌ НЕОЖИДАННАЯ ОШИБКА при вызове Groq API: {type(e).__name__}: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        return "Произошла неожиданная ошибка 😔"
 
 async def should_respond(message: Message) -> bool:
     try:
@@ -151,7 +191,7 @@ async def should_respond(message: Message) -> bool:
         
         return False
     except Exception as e:
-        logger.error(f"Error in should_respond: {e}")
+        logger.error(f"❌ Error in should_respond: {e}")
         return False
 
 @dp.message(CommandStart())
@@ -174,6 +214,7 @@ async def cmd_start(message: Message):
 /start - Показать это сообщение
 /clear - Очистить историю разговора
 /help - Помощь
+/test - Проверить Groq API
 
 Готов пообщаться! 💬
 """
@@ -185,9 +226,24 @@ async def cmd_start(message: Message):
             "/start",
             False
         )
-        logger.info(f"User {message.from_user.id} started bot")
+        logger.info(f"✅ User {message.from_user.id} (@{message.from_user.username}) started bot")
     except Exception as e:
-        logger.error(f"Error in cmd_start: {e}")
+        logger.error(f"❌ Error in cmd_start: {e}")
+
+@dp.message(Command("test"))
+async def cmd_test(message: Message):
+    """Тестовая команда для проверки Groq API"""
+    try:
+        await message.answer("🔄 Проверяю подключение к Groq API...")
+        
+        test_messages = [{"role": "user", "content": "Привет! Ответь одним словом: работаешь?"}]
+        response = await get_ai_response(test_messages)
+        
+        await message.answer(f"<b>✅ Тест завершен!</b>\n\nОтвет от AI:\n{response}")
+        
+    except Exception as e:
+        logger.error(f"❌ Error in cmd_test: {e}")
+        await message.answer(f"❌ Ошибка теста: {e}")
 
 @dp.message(Command("clear"))
 async def cmd_clear(message: Message):
@@ -199,9 +255,9 @@ async def cmd_clear(message: Message):
         conn.commit()
         conn.close()
         await message.answer("<b>✅ История разговора очищена!</b>")
-        logger.info(f"User {message.from_user.id} cleared history")
+        logger.info(f"✅ User {message.from_user.id} cleared history")
     except Exception as e:
-        logger.error(f"Error in cmd_clear: {e}")
+        logger.error(f"❌ Error in cmd_clear: {e}")
         await message.answer("Произошла ошибка при очистке истории")
 
 @dp.message(Command("help"))
@@ -226,12 +282,13 @@ async def cmd_help(message: Message):
 /start - Приветствие
 /clear - Очистить историю
 /help - Эта справка
+/test - Проверить Groq API
 
 <i>Powered by Groq AI 🚀</i>
 """
         await message.answer(help_text)
     except Exception as e:
-        logger.error(f"Error in cmd_help: {e}")
+        logger.error(f"❌ Error in cmd_help: {e}")
 
 @dp.message(F.text)
 async def handle_message(message: Message):
@@ -240,7 +297,8 @@ async def handle_message(message: Message):
         if not await should_respond(message):
             return
         
-        logger.info(f"Processing message from user {message.from_user.id}: {message.text[:50]}")
+        logger.info(f"📨 Получено сообщение от user {message.from_user.id} (@{message.from_user.username})")
+        logger.info(f"💬 Текст: {message.text[:100]}")
         
         # Показываем индикатор печати
         await bot.send_chat_action(message.chat.id, "typing")
@@ -255,6 +313,7 @@ async def handle_message(message: Message):
         
         # Получаем историю разговора
         history = get_chat_history(chat_id, user_id, limit=10)
+        logger.info(f"📚 Загружено {len(history)} сообщений из истории")
         
         # Добавляем текущее сообщение
         history.append({"role": "user", "content": user_text})
@@ -268,13 +327,15 @@ async def handle_message(message: Message):
         # Отправляем ответ
         try:
             await message.answer(f"<b>🤖 Сирис:</b>\n\n{ai_response}")
-            logger.info(f"Response sent to user {message.from_user.id}")
+            logger.info(f"✅ Ответ отправлен пользователю {message.from_user.id}")
         except Exception as e:
-            logger.error(f"Error sending formatted message: {e}")
+            logger.error(f"❌ Error sending formatted message: {e}")
             await message.answer(ai_response)
             
     except Exception as e:
-        logger.error(f"Error in handle_message: {e}", exc_info=True)
+        logger.error(f"❌ Error in handle_message: {type(e).__name__}: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
         try:
             await message.answer("Произошла ошибка при обработке сообщения 😔")
         except:
@@ -298,9 +359,9 @@ async def new_member(message: Message):
 <i>Давайте общаться!</i> 💬
 """
                 await message.answer(greeting)
-                logger.info(f"Bot added to group {message.chat.id}")
+                logger.info(f"✅ Bot added to group {message.chat.id}")
     except Exception as e:
-        logger.error(f"Error in new_member: {e}")
+        logger.error(f"❌ Error in new_member: {e}")
 
 async def main():
     try:
@@ -309,11 +370,21 @@ async def main():
         
         # Получаем информацию о боте
         bot_info = await bot.get_me()
-        logger.info(f"╔════════════════════════════════════════╗")
-        logger.info(f"║  Bot started successfully!             ║")
-        logger.info(f"║  Username: @{bot_info.username:<24} ║")
-        logger.info(f"║  Name: {bot_info.first_name:<29} ║")
-        logger.info(f"╚════════════════════════════════════════╝")
+        logger.info(f"")
+        logger.info(f"╔════════════════════════════════════════════════════════╗")
+        logger.info(f"║                                                        ║")
+        logger.info(f"║          🤖 БОТ УСПЕШНО ЗАПУЩЕН! 🚀                   ║")
+        logger.info(f"║                                                        ║")
+        logger.info(f"║  Username: @{bot_info.username:<40} ║")
+        logger.info(f"║  Name: {bot_info.first_name:<45} ║")
+        logger.info(f"║  ID: {bot_info.id:<47} ║")
+        logger.info(f"║                                                        ║")
+        logger.info(f"║  🔑 Groq API Key: {GROQ_API_KEY[:20]}...                 ║")
+        logger.info(f"║  📡 Groq Model: {MODEL_NAME:<36} ║")
+        logger.info(f"║                                                        ║")
+        logger.info(f"╚════════════════════════════════════════════════════════╝")
+        logger.info(f"")
+        logger.info(f"✅ Бот готов к работе! Ожидаю сообщения...")
         
         # Удаляем вебхуки
         await bot.delete_webhook(drop_pending_updates=True)
@@ -322,12 +393,16 @@ async def main():
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
         
     except Exception as e:
-        logger.error(f"Fatal error in main: {e}", exc_info=True)
+        logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА при запуске: {type(e).__name__}: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
 
 if __name__ == '__main__':
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("Bot stopped by user")
+        logger.info("⏹ Bot stopped by user")
     except Exception as e:
-        logger.error(f"Bot crashed: {e}", exc_info=True)
+        logger.error(f"❌ Bot crashed: {type(e).__name__}: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
